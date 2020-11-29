@@ -19,9 +19,18 @@ import numpy as np
 import copy 
 import nrrd
 import pickle
+import shutil
 
 import matplotlib.pyplot as plt 
 
+def execute(cmd):
+    """Execute commands in bash and print output to stdout directly"""
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1, universal_newlines=True) as p:
+        for line in p.stdout:
+            print(line, end='') # process line here
+
+    if p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, p.args)
 
 
 def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False): 
@@ -63,7 +72,8 @@ def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False
         print(" ".join(cmd))
     if verbose:
         print(f"converting: {image} from {format_in} to {format_out}")
-    subprocess.call(cmd,stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    #subprocess.call(cmd,stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    execute(cmd)
     return imageout.replace(format_in, format_out)
 
 
@@ -296,8 +306,8 @@ def ivimFBMMRFEstimator(bvalsFiles_average,mask,out_dir,fit_model,iterations=0,d
     cmd = [func,"--optMode","FBM","-n",str(7),"-i",bvalsFiles_average,"-g",str(iterations),"-o",out_dir,"-m", mask,log]
     if debug: 
         print(' '.join(cmd))
-    subprocess.call(cmd)      
-    
+    #subprocess.call(cmd)      
+    execute(cmd)
     
 def write_bvalsFileNames_average(signaldir,extension='.vtk'):
     """create bvalFilenames_average .txt files required for running DIPY/FBM model 
@@ -531,11 +541,15 @@ def plot_slice(v,figtitle,slice_ = None, figsize=(5,5)):
     
     # input `v` should be a numpy array with the order of dims of (x,y,z)
  
-    if v.ndim != 3: 
+    if v.ndim != 3 and v.ndim != 2: 
         print(f" Shape of input is {v.shape}") 
         print(f" Number of dims is {v.ndim}")         
-        sys.exit('Make sure that number of dims is 3')
+        sys.exit('Make sure that number of dims is 2 or 3')
 
+    if v.ndim == 2: 
+        # repmat the slice 3 times so it is plottable 
+        v = np.repeat(v[:, :, np.newaxis], 3, axis=2)        
+        
     if slice_ is None: 
         slice_ = v.shape[-1]//2 
         print(f"Slice {slice_}")
@@ -672,7 +686,7 @@ def plot_bvals(v,figtitle,slice_ = None, figsize=(10,10),columns=3,adjust_title=
     plt.tight_layout()
     
     
-def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsize=(10,10),adjust_title=0,compare_dir_names=None,image_type_names=None,adjust_contrast=False,adjust_scale=2):
+def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsize=(10,10),adjust_title=0,compare_dir_names=None,image_type_names=None,adjust_contrast=False,adjust_scale=2,mask=None):
     
     
     # compare images from different directories by supplying the directories and image types to plot 
@@ -767,11 +781,167 @@ def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsi
             
     plt.tight_layout()     
 
-def debugger():
-  # imports debugger tools 
-  from IPython import embed
+
+def save_source(savedir,args=None): 
+    """
+    Save copy of this script into a specified directory. Save args (if specified).
+                
+    """     
     
+    savedir = savedir + "/" if not savedir.endswith('/') else savedir 
+    
+    # save source 
+    this_script = sys.argv[0]
+    base,name = os.path.split(this_script)
+    shutil.copy(this_script,savedir+name)
+    print(f"Saved source to {savedir}")    
+    
+    if args is not None: 
+        # save args
+        pickle_dump(savedir+"args.pkl", args) # save args into .pkl
+        write_to_json(vars(args),savedir+"args.json") # save args into .json
+        with open("args.txt",'w') as f: # save argv into .txt 
+            f.write(' '.join(sys.argv))
+        print(f"Saved args")    
+
+def nrrd_temp(im,suffix="",savedir=None,header=None):
+    """Save an array to .nrrd file and view output quickly"""
+    
+    # check correct slices 
+    assert im.ndim == 3 or im.ndim == 2, "image must be 3D or 2D"
+    
+    im = np.nan_to_num(im)
+    
+    if savedir is not None: 
+        assert os.path.exists(savedir), "directory does not exist"
+        d = savedir + '/' if not savedir.endswith("/") else savedir
+    else: 
+        d = os.getcwd() + '/' 
+    
+    savename = "TEST_REMOVE_" + suffix + ".nrrd"
+    if header is not None: 
+        nrrd.write(d+savename,im,header=header)
+    else: 
+        nrrd.write(d+savename,im)
+    
+    print(f"Saved to: {d+savename}")
+    print(f"cd {d}")
+    print(f"itksnap -g {savename}")
+    print(f"mv {d+savename} $trash")        
+
+def itksnap(ims, seg=None, remote=False):
+	"""plot list of images in itksnap 
+
+	Args: 
+		ims (list): list of paths to file 
+		seg (str): (optional) path to segmentation file
+		remote (bool): (optional) if True, prints the path to executing itksnap on rayan, for use via Terminal in VNCserver 
+
+	Returns: 
+		opens itksnap window 
+
+	"""
+
+	def _check_inputs(ims,seg=None):
+		# verify that inputs are correct
+
+		# check that ims are supplied as string and not numpy arrays 
+		assert (isinstance(ims,list) or isinstance(ims, str)), f"'Ims' must be a list of strings or a string"
+
+		# if string provided, turn into list
+		if isinstance(ims,str):
+			ims = [ims]
+
+		# check that every path exists 
+		for im_path in ims:
+			assert os.path.exists(im_path), f"Path does not exist:\n{im_path}"
+		# check segmentation 
+		if seg is not None: 
+			assert os.path.exists(seg), f"Segmentation does not exist:\n{im_path}"
+
+		return ims # return modified ims)
+
+	# check inputs 
+	ims = _check_inputs(ims,seg=seg)
+
+	# grab first image and add to command list
+	ref_im = ims.pop(0)
+	cmd = ['itksnap', '-g', ref_im]
+
+	# add more images if supplied 
+	if ims:
+		cmd.append('-o')
+		cmd.extend(ims) # extend with added values
+
+	# add segmentation if supplied
+	if seg is not None:
+		cmd.append('-s')
+		cmd.append(seg)
+
+	# end with ampersand so that we don't suspend ipython terminal 
+	cmd.append('&')
+
+	if not remote:
+		# execute command in bash
+		execute(cmd)
+	else: 
+		# print path to terminal instead so it can be executed via Terminal VNCserver, rather than directly in browser window (when remote working)
+		print(' '.join(cmd))
+    
+def test_itksnap():
+	""" Tests sv.itksnap() function"""
+
+	# Specify example files 
+	rootdir = '/fileserver/abd/serge/IVIM_data/IVIM_data/all_cases2/Case100/'
+	impath1 = rootdir + 'average6/b0_averaged.nrrd'
+	impath2 = rootdir + 'average6/b800_averaged.nrrd'
+	seg = rootdir + 'segmentation.nrrd'
+
+
+	# Single image as list 
+	itksnap(ims=[impath1])
+	print('test1 passed')
+
+	# Single image as string 
+	itksnap(ims=impath1)
+	print('test2 passed')
+
+	# Two images 
+	itksnap(ims=[impath1,impath2])
+	print('test3a passed')
+
+	# Single image as string with segmentation 
+	itksnap(ims=impath1, seg=seg)
+	print('test3b passed')
+
+	# Single image as list with segmentation 
+	itksnap(ims=[impath1], seg=seg)
+	print('test4 passed')
+
+	# Two images with segmentation 
+	itksnap(ims=[impath1, impath2], seg=seg)
+	print('test5 passed')
+
+	# Incorrect path for single image
+	itksnap(ims=[impath1+'adsfad'])
+	print('test6 passed')
+
+	# Incorrect path for second image
+	itksnap(ims=[impath1, impath2+'adsfad'])
+	print('test7 passed')
+
+	# Incorrect path for segmentation
+	itksnap(ims=[impath1],seg=seg+'adf')
+	print('test8 passed')
+	
+	# Remote working printout 
+	itksnap(ims=[impath1, impath2], seg=seg, remote=True)
+	print('test9 passed')
+
+
+
 def unfinished():   
+
     
     
     
