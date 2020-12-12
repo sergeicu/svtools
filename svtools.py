@@ -782,27 +782,85 @@ def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsi
     plt.tight_layout()     
 
 
-def save_source(savedir,args=None): 
+def save_source(savedir): 
     """
     Save copy of this script into a specified directory. Save args (if specified).
-                
+
+    Args: 
+        savedir (str): path to dir
+        args: variable to save - [str, list, npy, dict, numpy.ndarray, arparse.Namespace]
+        args_savetype: 
     """     
     
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+        print('Created directory')
+        print(savedir)
+
     savedir = savedir + "/" if not savedir.endswith('/') else savedir 
-    
+    print('Source will be saved to:')
+    print(savedir)
+
+
     # save source 
     this_script = sys.argv[0]
     base,name = os.path.split(this_script)
     shutil.copy(this_script,savedir+name)
     print(f"Saved source to {savedir}")    
-    
-    if args is not None: 
-        # save args
-        pickle_dump(savedir+"args.pkl", args) # save args into .pkl
-        write_to_json(vars(args),savedir+"args.json") # save args into .json
+
+
+def save_args(savedir, args=None,args_savetype=None):
+    """
+    Save args to specified directory.
+
+    Args: 
+        savedir (str): path to dir
+        args: variable to save - [dict, sys.argv, arparse.Namespace]
+        args_savetype: type type to save - [npy,pkl,txt]. If not specified, isinstance(args,dict) or isinstance(args,argparse.Name) -> saved to json
+    """     
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+        print('Created directory')
+        print(savedir)
+
+    savedir = savedir + "/" if not savedir.endswith('/') else savedir 
+    print('Args will be saved to:')
+    print(savedir)
+    saved = True
+
+    if isinstance(args,dict):
+        # save to json 
+        if args_savetype != 'npy' and args_savetype != 'pkl':
+            # check every dict value for numpy and save to list instead (else there is error)
+            for k in args: 
+                if isinstance(args[k], np.ndarray):
+                    args[k].tolist()
+            write_to_json(args,savedir+"args.json") # save args into .json    
+        # save to pkl
+        elif args_savetype == 'pkl':
+            pickle_dump(savedir+"args.pkl", args) # save args into .pkl
+        # save to npy 
+        elif args_savetype == 'npy': 
+            for k in args: 
+                np.save(savedir+k+'.npy', args[k]) 
+    elif isinstance(args,argparse.Namespace):
+        # save argparse to .json 
+        write_to_json(vars(args),savedir+"args.json") # save args into .json        
+    elif args=='argv':
+        # save argv to .txt
         with open("args.txt",'w') as f: # save argv into .txt 
             f.write(' '.join(sys.argv))
+    else:
+        saved = False
+        print('WARNING: args were NOT saved.')
+        print('args types to save can only be a dict, argparse.Namespace object or `argv`')
+
+    if saved:
         print(f"Saved args")    
+    
+
+
+
 
 def nrrd_temp(im,suffix="",savedir=None,header=None):
     """Save an array to .nrrd file and view output quickly"""
@@ -937,6 +995,65 @@ def test_itksnap():
 	# Remote working printout 
 	itksnap(ims=[impath1, impath2], seg=seg, remote=True)
 	print('test9 passed')
+
+
+def fix_random_seed():
+
+	# Seed value
+	# Apparently you may use different seed values at each stage
+	seed_value= 0
+
+	# 1. Set the `PYTHONHASHSEED` environment variable at a fixed value
+	import os
+	os.environ['PYTHONHASHSEED']=str(seed_value)
+
+	# 2. Set the `python` built-in pseudo-random generator at a fixed value
+	import random
+	random.seed(seed_value)
+
+	# 3. Set the `numpy` pseudo-random generator at a fixed value
+	import numpy as np
+	np.random.seed(seed_value)
+
+	# 4. Set the `tensorflow` pseudo-random generator at a fixed value
+	import tensorflow as tf
+	tf.random.set_seed(seed_value)
+	# for later versions: 
+	# tf.compat.v1.set_random_seed(seed_value)
+
+	# 5. Configure a new global `tensorflow` session
+	from keras import backend as K
+	session_conf = tf.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+	sess = tf.Session(graph=tf.get_default_graph(), config=session_conf)
+	K.set_session(sess)
+	# for later versions:
+	# session_conf = tf.compat.v1.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+	# sess = tf.compat.v1.Session(graph=tf.compat.v1.get_default_graph(), config=session_conf)
+	# tf.compat.v1.keras.backend.set_session(sess)
+
+	# https://stackoverflow.com/questions/32419510/how-to-get-reproducible-results-in-keras
+
+
+
+# def check_memory_use():
+
+#     # check memory use in jupyter lab or current ipython window
+#     import sys
+
+#     # These are the usual ipython objects, including this one you are creating
+#     ipython_vars = ['In', 'Out', 'exit', 'quit', 'get_ipython', 'ipython_vars']
+
+#     # Get a sorted list of the objects and their sizes
+#     memory_used = sorted([(x, sys.getsizeof(globals().get(x))) for x in dir() if not x.startswith('_') and x not in sys.modules and x not in ipython_vars], key=lambda x: x[1], reverse=True)    
+#     memory_used
+
+#     # get total 
+#     total = 0
+#     division = 
+#     for tup in memory_used:
+#     memory_used = [f"{f[0]} \t{f[1]/(1024*1024):0.2f}Mb" for f in memory_used] 
+
+
 
 
 
