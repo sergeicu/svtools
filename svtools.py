@@ -20,7 +20,9 @@ import copy
 import nrrd
 import pickle
 import shutil
+import argparse
 
+import nibabel as nb
 import matplotlib.pyplot as plt 
 
 def execute(cmd):
@@ -47,8 +49,12 @@ def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False
 
     """    
     """py wrapper for crlConvertBetweenFileFormats tool"""
-    crlConvertFormat="/opt/x86_64/pkgs/crkit/nightly/20170107/crkit/bin/crlConvertBetweenFileFormats"
-#    crlConvertFormat="/opt/x86_64/pkgs/crkit/march-2009/bin/crlConvertBetweenFileFormats" (if necessary)
+    
+    print("WARNING: crlConvertBetweenFileFormats is NOT currently working when invoked from the terminal")
+    crlConvertFormat="/opt/el7/pkgs/crkit/nightly/20160503/bin/crlConvertBetweenFileFormats"
+
+    #    crlConvertFormat="/opt/x86_64/pkgs/crkit/nightly/20170107/crkit/bin/crlConvertBetweenFileFormats"
+    #    crlConvertFormat="/opt/x86_64/pkgs/crkit/march-2009/bin/crlConvertBetweenFileFormats" (if necessary)
 
     # explicitly search for the format_in (to avoid errors like before)
     if image.endswith('.nii.gz'):
@@ -782,7 +788,7 @@ def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsi
     plt.tight_layout()     
 
 
-def save_source(savedir): 
+def save_source(savedir,justthisfile=False): 
     """
     Save copy of this script into a specified directory. Save args (if specified).
 
@@ -790,22 +796,20 @@ def save_source(savedir):
         savedir (str): path to dir
         args: variable to save - [str, list, npy, dict, numpy.ndarray, arparse.Namespace]
         args_savetype: 
-    """     
-    
-    if not os.path.exists(savedir):
-        os.makedirs(savedir)
-        print('Created directory')
-        print(savedir)
+    """        
+    savedir = savedir + "/" + 'source/' if not savedir.endswith('/') else savedir + 'source/'
+    os.makedirs(savedir, exist_ok=True)
 
-    savedir = savedir + "/" if not savedir.endswith('/') else savedir 
-    print('Source will be saved to:')
-    print(savedir)
+    if justthisfile:
+        # save source 
+        this_script = sys.argv[0]
+        base,name = os.path.split(this_script)
+        shutil.copy(this_script,savedir+name)
+    else:
+        thisdir = os.path.dirname(os.path.abspath(__file__))
+        files = glob.glob(thisdir+'/*.py')
+        _ = [shutil.copyfile(i,savedir+os.path.basename(i)) for i in files]
 
-
-    # save source 
-    this_script = sys.argv[0]
-    base,name = os.path.split(this_script)
-    shutil.copy(this_script,savedir+name)
     print(f"Saved source to {savedir}")    
 
 
@@ -887,64 +891,104 @@ def nrrd_temp(im,suffix="",savedir=None,header=None):
     print(f"itksnap -g {savename}")
     print(f"mv {d+savename} $trash")        
 
+def temp_itksnap(array, ref_nii=None, compare_niis=None,custom_name=None):
+    
+    # fetch ref_nii if available 
+    if ref_nii is not None:
+        assert os.path.exists(ref_nii)
+        ref_imo = nb.load(ref_nii)
+    elif compare_niis is not None:
+        # fetch ref from first nii 
+        assert isinstance(compare_niis, list), "compare_nii must be a list of paths "
+        assert [os.path.exists(i) for i in compare_niis]
+        ref_imo = nb.load(compare_niis[0])
+    else:
+        ref_imo = None
+
+    # save array to temp directory (which will then get removed)
+    if ref_imo is not None:
+        imnewo = nb.Nifti1Image(array,affine=ref_imo.affine, header=ref_imo.header)
+    else:
+        imnewo = nb.Nifti1Image(array,affine=np.eye(4))
+    if custom_name is not None:
+        savename = '/home/ch215616/trash/' + 'temp_itksnap'+'_'+custom_name+'.nii.gz'
+    else:
+        savename = '/home/ch215616/trash/' + 'temp_itksnap.nii.gz'
+    nb.save(imnewo,savename)
+    
+    print(f"Saved temp image to:{savename}")
+
+
+    files = [savename]
+    if compare_niis is not None:
+        files.extend(compare_niis)
+    
+    itksnap(files)
+
+    
+
+
+
 def itksnap(ims, seg=None, remote=False):
-	"""plot list of images in itksnap 
+    """plot list of images in itksnap 
 
-	Args: 
-		ims (list): list of paths to file 
-		seg (str): (optional) path to segmentation file
-		remote (bool): (optional) if True, prints the path to executing itksnap on rayan, for use via Terminal in VNCserver 
+    Args: 
+        ims (list): list of paths to file 
+        seg (str): (optional) path to segmentation file
+        remote (bool): (optional) if True, prints the path to executing itksnap on rayan, for use via Terminal in VNCserver 
 
-	Returns: 
-		opens itksnap window 
+    Returns: 
+        opens itksnap window 
 
-	"""
+    """
 
-	def _check_inputs(ims,seg=None):
-		# verify that inputs are correct
+    def _check_inputs(ims,seg=None):
+        # verify that inputs are correct
 
-		# check that ims are supplied as string and not numpy arrays 
-		assert (isinstance(ims,list) or isinstance(ims, str)), f"'Ims' must be a list of strings or a string"
+        # check that ims are supplied as string and not numpy arrays 
+        assert (isinstance(ims,list) or isinstance(ims, str)), f"'Ims' must be a list of strings or a string"
 
-		# if string provided, turn into list
-		if isinstance(ims,str):
-			ims = [ims]
+        # if string provided, turn into list
+        if isinstance(ims,str):
+            ims = [ims]
 
-		# check that every path exists 
-		for im_path in ims:
-			assert os.path.exists(im_path), f"Path does not exist:\n{im_path}"
-		# check segmentation 
-		if seg is not None: 
-			assert os.path.exists(seg), f"Segmentation does not exist:\n{im_path}"
+        # check that every path exists 
+        for im_path in ims:
+            assert os.path.exists(im_path), f"Path does not exist:\n{im_path}"
+        # check segmentation 
+        if seg is not None: 
+            assert os.path.exists(seg), f"Segmentation does not exist:\n{im_path}"
 
-		return ims # return modified ims)
+        return ims # return modified ims)
 
-	# check inputs 
-	ims = _check_inputs(ims,seg=seg)
+    # check inputs 
+    ims = _check_inputs(ims,seg=seg)
 
-	# grab first image and add to command list
-	ref_im = ims.pop(0)
-	cmd = ['itksnap', '-g', ref_im]
+    # grab first image and add to command list
+    ref_im = ims.pop(0)
+    cmd = ['itksnap', '-g', ref_im]
 
-	# add more images if supplied 
-	if ims:
-		cmd.append('-o')
-		cmd.extend(ims) # extend with added values
+    # add more images if supplied 
+    if ims:
+        cmd.append('-o')
+        cmd.extend(ims) # extend with added values
 
-	# add segmentation if supplied
-	if seg is not None:
-		cmd.append('-s')
-		cmd.append(seg)
+    # add segmentation if supplied
+    if seg is not None:
+        cmd.append('-s')
+        cmd.append(seg)
 
-	# end with ampersand so that we don't suspend ipython terminal 
-	cmd.append('&')
+    # end with ampersand so that we don't suspend ipython terminal 
+    cmd.append('&')
 
-	if not remote:
-		# execute command in bash
-		execute(cmd)
-	else: 
-		# print path to terminal instead so it can be executed via Terminal VNCserver, rather than directly in browser window (when remote working)
-		print(' '.join(cmd))
+    if not remote:
+        # execute command in bash
+        execute(cmd)
+    else: 
+        # print path to terminal instead so it can be executed via Terminal VNCserver, rather than directly in browser window (when remote working)
+        out = ' '.join(cmd)
+        print(out)
+        return out  
     
 def test_itksnap():
 	""" Tests sv.itksnap() function"""
