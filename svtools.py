@@ -1078,3 +1078,13 @@ def fix_random_seed():
 	# https://stackoverflow.com/questions/32419510/how-to-get-reproducible-results-in-keras
 
 
+def launch_json(s):
+    """Convert Terminal command into a launch .json string"""
+
+    # check that there aren't any $ signs in the strings as we need the full path
+    assert '$' not in s, f"Please eliminate all $ signs by passing the string through 'echo' command first in Terminal."
+
+    print("Paste the following into launch.json with \"args\": [OUTPUT_LIST] without 'python' and 'COMMAND_NAME' ")
+    print(' ')
+
+    print(json.dumps(s.split(' ')))
