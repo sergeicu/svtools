@@ -21,6 +21,7 @@ import nrrd
 import pickle
 import shutil
 import argparse
+import git
 
 import nibabel as nb
 import matplotlib.pyplot as plt 
@@ -788,11 +789,13 @@ def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsi
     plt.tight_layout()     
 
 
-def save_source(savedir,justthisfile=False): 
+def save_source(thisfile_handle, savedir,justthisfile=False): 
+    
     """
     Save copy of this script into a specified directory. Save args (if specified).
 
     Args: 
+        thisfile_handle (sys.argv[0] object) - necessary to be invoked from the file that's running it 
         savedir (str): path to dir
         args: variable to save - [str, list, npy, dict, numpy.ndarray, arparse.Namespace]
         args_savetype: 
@@ -864,7 +867,35 @@ def save_args(savedir, args=None,args_savetype=None):
     
 
 
+def save_git_status(savedir):
+    """
+    Save sha hash of current git head for the repository and git status
 
+    Args: 
+        savedir (str): path to dir
+    """     
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+        print('Created directory')
+        print(savedir)
+
+    savedir = savedir + "/" if not savedir.endswith('/') else savedir 
+    print('Git hash and status will be saved to:')
+    print(savedir)
+    saved = True
+    
+    # prep git hash 
+    dictionary = {'sha':'','status':''}
+    repo = git.Repo(search_parent_directories=True)
+    dictionary['sha'] = repo.head.object.hexsha
+    # prep git status 
+    dictionary['status'] = repo.git.status()
+    
+    # save 
+    write_to_json(dictionary,savedir+"git_status.json") # save args into .json  
+    
+    if saved:
+        print(f"Saved git head sha and status")    
 
 def nrrd_temp(im,suffix="",savedir=None,header=None):
     """Save an array to .nrrd file and view output quickly"""
