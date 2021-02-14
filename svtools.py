@@ -15,19 +15,31 @@ import os
 import json 
 import sys
 import glob 
-import numpy as np 
 import copy 
-import nrrd
-import pickle
 import shutil
 import argparse
-import git
+import re
+import fnmatch
+import math 
 
+import nrrd
+import pickle
+import git
 import nibabel as nb
+import numpy as np 
 import matplotlib.pyplot as plt 
 
-def execute(cmd):
+
+# -----------
+# Execute in bash 
+# -----------
+
+
+def execute(cmd,sudo=False):
     """Execute commands in bash and print output to stdout directly"""
+
+    if sudo:
+        cmd = ["sudo"]+cmd
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1, universal_newlines=True) as p:
         for line in p.stdout:
             print(line, end='') # process line here
@@ -35,6 +47,9 @@ def execute(cmd):
     if p.returncode != 0:
         raise subprocess.CalledProcessError(p.returncode, p.args)
 
+# -----------
+# File conversion 
+# -----------
 
 def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False): 
     """
@@ -51,9 +66,9 @@ def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False
     """    
     """py wrapper for crlConvertBetweenFileFormats tool"""
     
-    print("WARNING: crlConvertBetweenFileFormats is NOT currently working when invoked from the terminal")
-    crlConvertFormat="/opt/el7/pkgs/crkit/nightly/20160503/bin/crlConvertBetweenFileFormats"
-
+    #print("WARNING: crlConvertBetweenFileFormats is NOT currently working when invoked from the terminal")
+    #crlConvertFormat="/opt/el7/pkgs/crkit/nightly/20160503/bin/crlConvertBetweenFileFormats"
+    crlConvertFormat="/opt/el7/pkgs/crkit/2021/crkit-master/bin/crlConvertBetweenFileFormats"
     #    crlConvertFormat="/opt/x86_64/pkgs/crkit/nightly/20170107/crkit/bin/crlConvertBetweenFileFormats"
     #    crlConvertFormat="/opt/x86_64/pkgs/crkit/march-2009/bin/crlConvertBetweenFileFormats" (if necessary)
 
@@ -74,7 +89,8 @@ def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False
         imageout=dirout+f
     else:
         imageout=image
-    cmd = [crlConvertFormat, "-in", image, "-out", imageout.replace(format_in, format_out)]
+    #cmd = [crlConvertFormat, "-in", image, "-out", imageout.replace(format_in, format_out)]
+    cmd = [crlConvertFormat, image, imageout.replace(format_in, format_out)]
     if debug: 
         print(" ".join(cmd))
     if verbose:
@@ -82,7 +98,6 @@ def crl_convert_format(image, format_out,dirout=None, verbose = True,debug=False
     #subprocess.call(cmd,stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     execute(cmd)
     return imageout.replace(format_in, format_out)
-
 
 def vtk2nrrd(path): 
     """
@@ -137,6 +152,9 @@ def nrrd2vtk(path):
     else: 
         sys.exit("Incorrect input to nrrd2vtk() ")    
 
+# -----------
+# JSON / PICKLE
+# -----------
 
 def read_from_json(filename):
     """
@@ -152,194 +170,6 @@ def read_from_json(filename):
         data = json.load(f)
     return data        
 
-
-def get_ivim_images(rootdir):
-    """
-    Load 4 IVIM parameter images from a directory. 
-
-    Most IVIM tools* output 4 parameter files in a specific naming convention. 
-    This script assumes that naming convention and loads all 4 files into a dict. 
-    * such as FBM, DIPY and ROAR methods, used Vasylechko et al. 2020 MICCAI submission. 
-
-    Args: 
-        rootdir (str): path to directory that contains 4 IVIM parameter files. 
-                            meanB0_1.nrrd 
-                            meanADC_1.nrrd 
-                            meanPER_1.nrrd 
-                            meanPER_FRAC_1.nrrd
-    Returns: 
-        params_p (dict): dictionary with 4 parameter images of the IVIM 
-        header (:obj:`collections.OrderedDict`):   header of the .nrrd file that was used to load the files 
-
-    """    
-    params_p = {'S0':None, 'D':None, 'P':None, 'P_f':None}
-    params_p['S0'],header = nrrd.read(rootdir+"meanB0_1.nrrd")
-    params_p['D'],_ = nrrd.read(rootdir+"meanADC_1.nrrd")
-    params_p['P'],_ = nrrd.read(rootdir+"meanPER_1.nrrd")
-    params_p['P_f'],_ = nrrd.read(rootdir+"meanPER_FRAC_1.nrrd")
-    return params_p, header
-
-
-
-def get_dwi_images(rootdir,suffix,bvalues=None):
-    """
-    Loads DWI images into a list as numpy arrays. 
-
-    Args: 
-        rootdir (str):    path to directory that contains the DWI images at multiple bvalues 
-        [suffix] (str):   each file is assumed to be prefixed with some identifier. 
-                             E.g. b100_averaged.nrrd -> '_averaged' (default value)
-        [bvalues] (list): list of bvalues that will be used to load the images. If not specified, the default values will be used. 
-
-    Returns: 
-        images (list):    bvalue images in a list 
-        header (:obj:`collections.OrderedDict`): header of the .nrrd file that was used to load the files 
-
-    """
-    if not bvalues: 
-        bvalues = [0,50,100,200,400,600,800]
-    if not suffix: 
-        suffix = "_averaged"
-    images = []
-    for bval in bvalues: 
-        im, header = nrrd.read(rootdir+"b"+str(bval)+suffix+".nrrd")
-        images.append(im)
-    return images, header
-
-
-
-def remove_outliers(data, max_deviations=2):
-    """
-    Remove outliers in a numpy array. 
-    
-    Args: 
-        data (:obj:`numpy.ndarray`): data in a n-dimensional numpy array 
-        [max_deviations] (int):      deviations from the mean for which to remove outliers. Defaults to 2. 
-    Returns: 
-        no_outliers (:obj:`numpy.ndarray`): data with removed outliers
-
-    """
-    
-    mean = np.mean(data)
-    standard_deviation = np.std(data)
-    distance_from_mean = abs(data - mean)
-    not_outlier = distance_from_mean < max_deviations * standard_deviation
-    no_outliers = data[not_outlier]
-    return no_outliers
-
-def get_label_masks2(segmented_image,labels):     
-    """ 
-    Create binary mask for each ROI in a segmentation image as a dictionary. 
-    
-    Args: 
-        segmented_image (str): path to a segmentation 
-        labels (dict):         dictionary denoting the name and value for labels. 
-                                e.g. dict({'kidneys':1,'spleen':2, 'liver':3})
-    Returns: 
-        label_masks (list):    list of numpy.ndarray objects as binary masks for each ROI 
-        header (:obj:`collections.OrderedDict`): header of the .nrrd file that was used to load the files 
-    """
-    def _create_label_mask(segmented_image,label):
-        # get label and turn into mask  
-        mask = copy.deepcopy(segmented_image)
-        mask = np.squeeze(mask)      
-        mask[mask!=label] = 0  #all values not matching the label set to zero 
-        mask[mask==label] = 1  #all values matching the label set to one 
-        return mask    
-
-    # load nii or nrrd
-    if segmented_image.endswith('.nii.gz') or segmented_image.endswith('.nii'): 
-        im = nb.load(segmented_image).get_fdata()
-        header = nb.load(segmented_image).header
-    elif segmented_image.endswith('.nrrd'): 
-        im, header = nrrd.read(segmented_image)
-    label_masks = {label:_create_label_mask(im, label_id) for label,label_id in labels.items()}
-    return label_masks, header
-
-def get_label_masks(segmented_image,labels=None):     
-    """ 
-    Create binary mask for each ROI in a segmentation image 
-    
-    Args: 
-        segmented_image (str): path to a segmentation 
-        labels (dict):         dictionary denoting the name and value for labels. 
-                                e.g. dict({'kidneys':1,'spleen':2, 'liver':3})
-    Returns: 
-        label_masks (list):    list of numpy.ndarray objects as binary masks for each ROI 
-        header (:obj:`collections.OrderedDict`): header of the .nrrd file that was used to load the files 
-    """
-    def _create_label_mask(segmented_image,label):
-        # get label and turn into mask  
-        mask = copy.deepcopy(segmented_image)
-        mask = np.squeeze(mask)      
-        mask[mask!=label] = 0  #all values not matching the label set to zero 
-        mask[mask==label] = 1  #all values matching the label set to one 
-        return mask    
-    
-    if not labels:
-        labels = dict({'kidneys':1,'spleen':2, 'liver':3})
-    # load nii or nrrd
-    if segmented_image.endswith('.nii.gz') or segmented_image.endswith('.nii'): 
-        im = nb.load(segmented_image).get_fdata()
-        header = nb.load(segmented_image).header
-    elif segmented_image.endswith('.nrrd'): 
-        im, header = nrrd.read(segmented_image)
-    label_masks = [_create_label_mask(im, label_id) for label,label_id in labels.items()]
-    return label_masks, header
-
-
-
-def ivimFBMMRFEstimator(bvalsFiles_average,mask,out_dir,fit_model,iterations=0,debug = False): 
-    """
-    Wrapper for FBM DIPY algorithm in python for a single image. 
-    
-    C++ implementation of FBM algorithms can be found here:
-        /fileserver/abd/bin/ivimFBMMRFEstimator
-    Note that the algorithm generates .vtk files. 
-    
-    Args: 
-        bvalsFiles_average (str): path to a .txt file that indicates the full path to all of the 7 b-value images
-        mask (str): path to a binary segmentation image in .vtk format 
-        out_dir (str): path to a directory to save the files 
-        fit_model (str): DIPY (BOBYQA) or FBM (spatially regularized BOBYQA)
-        
-    
-    """
-    func = "/fileserver/abd/bin/ivimFBMMRFEstimator"
-    log = ""
-    if fit_model == 'FBM':
-        if iterations == 0: 
-            iterations = 500 # set iterations to 500 if iterations are not supplied with the model (aka if they regress to default of zero)    
-    cmd = [func,"--optMode","FBM","-n",str(7),"-i",bvalsFiles_average,"-g",str(iterations),"-o",out_dir,"-m", mask,log]
-    if debug: 
-        print(' '.join(cmd))
-    #subprocess.call(cmd)      
-    execute(cmd)
-    
-def write_bvalsFileNames_average(signaldir,extension='.vtk'):
-    """create bvalFilenames_average .txt files required for running DIPY/FBM model 
-    
-    Args: 
-        signaldir (str): path to directory which contains the acquired b-value files (whether geometrically averaged or not) in the form 'b0_averaged.vtk', etc 
-        extension (str): specify whether the filesnames are .nrrd or .vtk (default)
-    Returns: 
-        savedir (str): directory to which the bvalsFileNames.txt file was saved. 
-
-    WARNING: .txt file will be saved to the same directory where the images are 
-    NB Advanced user warning: this is different to bvalsFilename.txt which is required to run geometric averaging operation. Do not confused the two. 
-
-    
-    """
-    savedir = signaldir + "/bvalsFileNames.txt"
-    lines = []
-    
-    with open(savedir,'w') as f:
-        for bval in [0,50,100,200,400,600,800]:
-            fullpath=signaldir+"b"+str(bval)+"_averaged"+extension
-            lines.append('\t'.join([str(bval),fullpath+"\n"]))
-        f.writelines(lines) 
-    return savedir
-
 def write_to_json(dictionary,filename):
     """
     Write JSON file 
@@ -353,32 +183,18 @@ def write_to_json(dictionary,filename):
     with open(filename,'w') as f: 
         json.dump(dictionary,f)
 
-# get signal estimate from IVIM parameter estimates
-def ivim_eqtn_image(parameters): 
-    S0 = parameters['S0'][...,np.newaxis] #expand with one new axis so that b* parameter can be broadcast
-    D = parameters['D'][...,np.newaxis]
-    P = parameters['P'][...,np.newaxis]
-    P_f = parameters['P_f'][...,np.newaxis]
-    x,y,z,t = S0.shape
-    bvals = np.array([0,50,100,200,400,600,800])
-    bvals_ = np.tile(bvals,(x,y,z,1))
+def pickle_dump(filename, pickle_object):
+    # wrapper around the pickle dump method (to avoid the clutter) 
+    pickle.dump(pickle_object,open(filename,'wb'))
     
-    signal_image = S0*(P_f*np.exp(-1*bvals_*P)+(1-P_f)*np.exp(-1*bvals_*D))
-    signal_image = np.moveaxis(signal_image,3,0)
-    return signal_image
+def pickle_load(filename):
+    # wrapper around the pickle load method (to avoid the clutter) 
+    return pickle.load(open(filename,'rb'))
 
-# put parameter estimates of a voxel through the forward model to obtain the estimated signal 
-def ivim_eqtn_voxel(parameters): 
-    S0 = parameters['S0']
-    D = parameters['D']
-    P = parameters['P']
-    P_f = parameters['P_f']
-    bvals = np.array([0,50,100,200,400,600,800])
-    signal = S0*(P_f*np.exp(-1*bvals*P)+(1-P_f)*np.exp(-1*bvals*D))
-    return signal
-    
-    
-import re
+# -----------
+# Strings 
+# -----------
+
 
 def get_nums_from_string(string):
     """
@@ -418,18 +234,6 @@ def get_nums_from_string(string):
     """
     return re.findall("[-+]?[.]?[\d]+(?:,\d\d\d)*[\.]?\d*(?:[eE][-+]?\d+)?", string)
 
-
-def init_argparse(): 
-    from argparse import Namespace
-    args = Namespace()
-    return args 
-
-def print_args(args):
-    for arg in vars(args):
-        print(arg, getattr(args, arg))
-    
-
-import sys
 def strip_trailing_whitespace(filename):
     """\
     strip trailing whitespace from file
@@ -450,32 +254,25 @@ def strip_trailing_whitespace(filename):
     print("Done. Stripped %s bytes." % (len(content)-outsize))
 
 
-def print_source(module, function):
-    """For use inside an IPython notebook: given a module and a function, print the source code."""
-    from inspect import getmembers, isfunction, getsource
-    from pygments import highlight
-    from pygments.lexers import PythonLexer
-    from pygments.formatters import HtmlFormatter
-    from IPython.core.display import HTML
+# -----------
+# Argparse 
+# -----------
 
-    internal_module = __import__(module)
+def init_argparse(): 
+    from argparse import Namespace
+    args = Namespace()
+    return args 
 
-    internal_functions = dict(getmembers(internal_module, isfunction))
+def print_args(args):
+    for arg in vars(args):
+        print(arg, getattr(args, arg))
+    
 
-    return HTML(highlight(getsource(internal_functions[function]), PythonLexer(), HtmlFormatter(full=True)))
-
-def print_source2(function):
-    """For use inside an IPython notebook: given a module and a function, print the source code."""
-    from inspect import getmembers, isfunction, getsource
-    from pygments import highlight
-    from pygments.lexers import PythonLexer
-    from pygments.formatters import HtmlFormatter
-    from IPython.core.display import HTML
-
-    return HTML(highlight(getsource(function), PythonLexer(), HtmlFormatter(full=True)))
+# -----------
+# Search files
+# -----------
 
 
-import os, fnmatch
 def find_files(pattern, path):
     """
     Find all files that match a naming pattern. Search subdirectories.
@@ -497,51 +294,20 @@ def find_files(pattern, path):
                 result.append(os.path.join(root, name))
     return result
 
-def pickle_dump(filename, pickle_object):
-    # wrapper around the pickle dump method (to avoid the clutter) 
-    pickle.dump(pickle_object,open(filename,'wb'))
-    
-def pickle_load(filename):
-    # wrapper around the pickle load method (to avoid the clutter) 
-    return pickle.load(open(filename,'rb'))
+
+# -----------
+# Dictionaries
+# -----------
+
 
 def vars_to_dict(varnamelist):
     for i in varnamelist:
         d[i] = locals()[i]
     return d 
 
-
-def plot_params(v,figtitle,slice_ = None, figsize=(10,10)):
-    # plot 4 IVIM parameters 
-    
-    # input `v` should be a dictionary that contains 'S0','D','P','P_f' entries
-
-    # get `v` via svtools.get_ivim_images(path)
-    
-    if slice_ is None: 
-        slice_ = v['S0'].shape[-1]//2 
-        
-    # remove all values below zero for P_f 
-    v['P_f'][v['P_f']<0]=0
-    
-    L = 4
-    cols = 2
-    rows = L//cols 
-    fig, axs = plt.subplots(rows, cols,figsize=figsize)    
-    fig.suptitle(figtitle+' : slice'+str(slice_), fontsize=16,y=1.01)
-    axs[0,0].imshow(v['S0'][:,:,slice_],cmap='gray')
-    axs[0,1].imshow(v['D'][:,:,slice_],cmap='gray')
-    axs[1,0].imshow(v['P'][:,:,slice_],cmap='gray')
-    axs[1,1].imshow(v['P_f'][:,:,slice_],cmap='gray')
-    axs[0, 0].title.set_text('S0')
-    axs[0, 1].title.set_text('D')
-    axs[1, 0].title.set_text('P')
-    axs[1, 1].title.set_text('P_f')    
-    axs[0, 0].axis('off')
-    axs[0, 1].axis('off')    
-    axs[1, 0].axis('off')
-    axs[1, 1].axis('off')
-    plt.tight_layout()
+# -----------
+# Plot images (python)
+# -----------
 
 def plot_slice(v,figtitle,slice_ = None, figsize=(5,5)):
     # plot a single image 
@@ -567,8 +333,6 @@ def plot_slice(v,figtitle,slice_ = None, figsize=(5,5)):
     plt.axis('off')
     plt.tight_layout()
     
-import math 
-
 def plot_slices(v,figtitle,slices = None, figsize=(15,15),columns=3):
     # plot a single image 
     
@@ -606,7 +370,7 @@ def plot_slices(v,figtitle,slices = None, figsize=(15,15),columns=3):
     L = len(slices)
 
     cols = columns
-#    rows = math.ceil(L/cols) if math.ceil(L/cols)>1 else 2 
+    #    rows = math.ceil(L/cols) if math.ceil(L/cols)>1 else 2 
     rows = L//cols
     fig, axs = plt.subplots(rows, cols,figsize=figsize)    
     fig.suptitle(figtitle, fontsize=16,y=1.01)
@@ -641,58 +405,7 @@ def plot_slices(v,figtitle,slices = None, figsize=(15,15),columns=3):
             axs[j].axis('off')
             k=k+1            
     plt.tight_layout()  
-
-def plot_bvals(v,figtitle,slice_ = None, figsize=(10,10),columns=3,adjust_title=0):
-    # plot first 6 bvalues from a list of b-value images 
-    
-    # input `v` should be: 
-        # a list of images
-        # or 
-        # a numpy array with the order of dims of (bvals, x,y,z)
-
-    # get `v` via svtools.get_dwi_images(path,'_averaged')
-    
-    if isinstance(v,list): 
-        v = np.array(v)
-    elif isinstance(v,np.ndarray): 
-        if v.shape[0] != 7: 
-            if v.shape[-1] == 7: 
-                print('Warning: Transposing dims (x,y,z,bvals) -> (bvals,x,y,z)')
-                v = np.transpose(v,(-1,0,1,2))
-            else:
-                print(f" Shape of input is {v.shape}") 
-                sys.exit('Make sure that first dimension is the b-value order')
-
-    if slice_ is None: 
-        slice_ = v.shape[-1]//2 
-        
-    L = v.shape[0]
-    cols = columns
-    rows = L//cols 
-    
-    if columns <2: 
-        sys.exit("n of columns must be greater than 1")       
-    
-    fig, axs = plt.subplots(rows, cols,figsize=figsize)    
-    fig.suptitle(figtitle, fontsize=16,y=adjust_title)
-    k = 0 
-    bvals = [0,50,100,200,400,600,800]
-    if rows != 1: 
-        for i in range(rows): 
-            for j in range(cols): 
-                axs[i,j].imshow(v[k,:,:,slice_],cmap='gray')
-                axs[i, j].title.set_text('B'+str(bvals[k]))
-                axs[i, j].axis('off')
-                k=k+1
-    else: 
-        for j in range(cols): 
-            axs[j].imshow(v[k,:,:,slice_],cmap='gray')
-            axs[j].title.set_text('B'+str(bvals[k]))
-            axs[j].axis('off')
-            k=k+1        
-    plt.tight_layout()
-    
-    
+ 
 def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsize=(10,10),adjust_title=0,compare_dir_names=None,image_type_names=None,adjust_contrast=False,adjust_scale=2,mask=None):
     
     
@@ -788,6 +501,91 @@ def plot_ims(figtitle, root,compare_dirs,image_types,suffix='',slice_=None,figsi
             
     plt.tight_layout()     
 
+def plot_bvals(v,figtitle,slice_ = None, figsize=(10,10),columns=3,adjust_title=0):
+    # plot first 6 bvalues from a list of b-value images 
+    
+    # input `v` should be: 
+        # a list of images
+        # or 
+        # a numpy array with the order of dims of (bvals, x,y,z)
+
+    # get `v` via svtools.get_dwi_images(path,'_averaged')
+    
+    if isinstance(v,list): 
+        v = np.array(v)
+    elif isinstance(v,np.ndarray): 
+        if v.shape[0] != 7: 
+            if v.shape[-1] == 7: 
+                print('Warning: Transposing dims (x,y,z,bvals) -> (bvals,x,y,z)')
+                v = np.transpose(v,(-1,0,1,2))
+            else:
+                print(f" Shape of input is {v.shape}") 
+                sys.exit('Make sure that first dimension is the b-value order')
+
+    if slice_ is None: 
+        slice_ = v.shape[-1]//2 
+        
+    L = v.shape[0]
+    cols = columns
+    rows = L//cols 
+    
+    if columns <2: 
+        sys.exit("n of columns must be greater than 1")       
+    
+    fig, axs = plt.subplots(rows, cols,figsize=figsize)    
+    fig.suptitle(figtitle, fontsize=16,y=adjust_title)
+    k = 0 
+    bvals = [0,50,100,200,400,600,800]
+    if rows != 1: 
+        for i in range(rows): 
+            for j in range(cols): 
+                axs[i,j].imshow(v[k,:,:,slice_],cmap='gray')
+                axs[i, j].title.set_text('B'+str(bvals[k]))
+                axs[i, j].axis('off')
+                k=k+1
+    else: 
+        for j in range(cols): 
+            axs[j].imshow(v[k,:,:,slice_],cmap='gray')
+            axs[j].title.set_text('B'+str(bvals[k]))
+            axs[j].axis('off')
+            k=k+1        
+    plt.tight_layout()
+   
+def plot_params(v,figtitle,slice_ = None, figsize=(10,10)):
+    # plot 4 IVIM parameters 
+    
+    # input `v` should be a dictionary that contains 'S0','D','P','P_f' entries
+
+    # get `v` via svtools.get_ivim_images(path)
+    
+    if slice_ is None: 
+        slice_ = v['S0'].shape[-1]//2 
+        
+    # remove all values below zero for P_f 
+    v['P_f'][v['P_f']<0]=0
+    
+    L = 4
+    cols = 2
+    rows = L//cols 
+    fig, axs = plt.subplots(rows, cols,figsize=figsize)    
+    fig.suptitle(figtitle+' : slice'+str(slice_), fontsize=16,y=1.01)
+    axs[0,0].imshow(v['S0'][:,:,slice_],cmap='gray')
+    axs[0,1].imshow(v['D'][:,:,slice_],cmap='gray')
+    axs[1,0].imshow(v['P'][:,:,slice_],cmap='gray')
+    axs[1,1].imshow(v['P_f'][:,:,slice_],cmap='gray')
+    axs[0, 0].title.set_text('S0')
+    axs[0, 1].title.set_text('D')
+    axs[1, 0].title.set_text('P')
+    axs[1, 1].title.set_text('P_f')    
+    axs[0, 0].axis('off')
+    axs[0, 1].axis('off')    
+    axs[1, 0].axis('off')
+    axs[1, 1].axis('off')
+    plt.tight_layout()
+
+# -----------
+# Saving input - source/args/git
+# -----------
 
 def save_source(thisfile_handle, savedir,justthisfile=False): 
     
@@ -814,7 +612,6 @@ def save_source(thisfile_handle, savedir,justthisfile=False):
         _ = [shutil.copyfile(i,savedir+os.path.basename(i)) for i in files]
 
     print(f"Saved source to {savedir}")    
-
 
 def save_args(savedir, args=None,args_savetype=None):
     """
@@ -864,9 +661,7 @@ def save_args(savedir, args=None,args_savetype=None):
 
     if saved:
         print(f"Saved args")    
-    
-
-
+  
 def save_git_status(savedir):
     """
     Save sha hash of current git head for the repository and git status
@@ -896,6 +691,11 @@ def save_git_status(savedir):
     
     if saved:
         print(f"Saved git head sha and status")    
+
+
+# -----------
+# Image viewers (bash)
+# -----------
 
 def nrrd_temp(im,suffix="",savedir=None,header=None):
     """Save an array to .nrrd file and view output quickly"""
@@ -955,9 +755,6 @@ def temp_itksnap(array, ref_nii=None, compare_niis=None,custom_name=None):
         files.extend(compare_niis)
     
     itksnap(files)
-
-    
-
 
 
 def itksnap(ims, seg=None, remote=False):
@@ -1071,6 +868,291 @@ def test_itksnap():
 	itksnap(ims=[impath1, impath2], seg=seg, remote=True)
 	print('test9 passed')
 
+# -----------
+# VS code IDE 
+# -----------
+
+def launch_json(s):
+
+    """Convert Terminal command into a launch .json string"""
+
+    # check that there aren't any $ signs in the strings as we need the full path
+    assert '$' not in s, f"Please eliminate all $ signs by passing the string through 'echo' command first in Terminal."
+
+    print("Paste the following into launch.json with \"args\": [OUTPUT_LIST] without 'python' and 'COMMAND_NAME' ")
+    print(' ')
+
+    print(json.dumps(s.split(' ')))
+
+
+# -----------
+# IVIM project related 
+# -----------
+
+def get_ivim_images(rootdir):
+    """
+    Load 4 IVIM parameter images from a directory. 
+
+    Most IVIM tools* output 4 parameter files in a specific naming convention. 
+    This script assumes that naming convention and loads all 4 files into a dict. 
+    * such as FBM, DIPY and ROAR methods, used Vasylechko et al. 2020 MICCAI submission. 
+
+    Args: 
+        rootdir (str): path to directory that contains 4 IVIM parameter files. 
+                            meanB0_1.nrrd 
+                            meanADC_1.nrrd 
+                            meanPER_1.nrrd 
+                            meanPER_FRAC_1.nrrd
+    Returns: 
+        params_p (dict): dictionary with 4 parameter images of the IVIM 
+        header (:obj:`collections.OrderedDict`):   header of the .nrrd file that was used to load the files 
+
+    """    
+    params_p = {'S0':None, 'D':None, 'P':None, 'P_f':None}
+    params_p['S0'],header = nrrd.read(rootdir+"meanB0_1.nrrd")
+    params_p['D'],_ = nrrd.read(rootdir+"meanADC_1.nrrd")
+    params_p['P'],_ = nrrd.read(rootdir+"meanPER_1.nrrd")
+    params_p['P_f'],_ = nrrd.read(rootdir+"meanPER_FRAC_1.nrrd")
+    return params_p, header
+
+def get_dwi_images(rootdir,suffix,bvalues=None):
+    """
+    Loads DWI images (raw MRI signal) into a list as numpy arrays. 
+
+    Args: 
+        rootdir (str):    path to directory that contains the DWI images at multiple bvalues 
+        [suffix] (str):   each file is assumed to be prefixed with some identifier. 
+                             E.g. b100_averaged.nrrd -> '_averaged' (default value)
+        [bvalues] (list): list of bvalues that will be used to load the images. If not specified, the default values will be used. 
+
+    Returns: 
+        images (list):    bvalue images in a list 
+        header (:obj:`collections.OrderedDict`): header of the .nrrd file that was used to load the files 
+
+    """
+    if not bvalues: 
+        bvalues = [0,50,100,200,400,600,800]
+    if not suffix: 
+        suffix = "_averaged"
+    images = []
+    for bval in bvalues: 
+        im, header = nrrd.read(rootdir+"b"+str(bval)+suffix+".nrrd")
+        images.append(im)
+    return images, header
+
+def remove_outliers(data, max_deviations=2):
+    """
+    Remove outliers in a numpy array. 
+    
+    Args: 
+        data (:obj:`numpy.ndarray`): data in a n-dimensional numpy array 
+        [max_deviations] (int):      deviations from the mean for which to remove outliers. Defaults to 2. 
+    Returns: 
+        no_outliers (:obj:`numpy.ndarray`): data with removed outliers
+
+    """
+    
+    mean = np.mean(data)
+    standard_deviation = np.std(data)
+    distance_from_mean = abs(data - mean)
+    not_outlier = distance_from_mean < max_deviations * standard_deviation
+    no_outliers = data[not_outlier]
+    return no_outliers
+
+def get_label_masks2(segmented_image,labels):     
+    """ 
+    Create binary mask for each ROI in a segmentation image as a dictionary. 
+    
+    Args: 
+        segmented_image (str): path to a segmentation 
+        labels (dict):         dictionary denoting the name and value for labels. 
+                                e.g. dict({'kidneys':1,'spleen':2, 'liver':3})
+    Returns: 
+        label_masks (list):    list of numpy.ndarray objects as binary masks for each ROI 
+        header (:obj:`collections.OrderedDict`): header of the .nrrd file that was used to load the files 
+    """
+    def _create_label_mask(segmented_image,label):
+        # get label and turn into mask  
+        mask = copy.deepcopy(segmented_image)
+        mask = np.squeeze(mask)      
+        mask[mask!=label] = 0  #all values not matching the label set to zero 
+        mask[mask==label] = 1  #all values matching the label set to one 
+        return mask    
+
+    # load nii or nrrd
+    if segmented_image.endswith('.nii.gz') or segmented_image.endswith('.nii'): 
+        im = nb.load(segmented_image).get_fdata()
+        header = nb.load(segmented_image).header
+    elif segmented_image.endswith('.nrrd'): 
+        im, header = nrrd.read(segmented_image)
+    label_masks = {label:_create_label_mask(im, label_id) for label,label_id in labels.items()}
+    return label_masks, header
+
+def get_label_masks(segmented_image,labels=None):     
+    """ 
+    Create binary mask for each ROI in a segmentation image 
+    
+    Args: 
+        segmented_image (str): path to a segmentation 
+        labels (dict):         dictionary denoting the name and value for labels. 
+                                e.g. dict({'kidneys':1,'spleen':2, 'liver':3})
+    Returns: 
+        label_masks (list):    list of numpy.ndarray objects as binary masks for each ROI 
+        header (:obj:`collections.OrderedDict`): header of the .nrrd file that was used to load the files 
+    """
+    def _create_label_mask(segmented_image,label):
+        # get label and turn into mask  
+        mask = copy.deepcopy(segmented_image)
+        mask = np.squeeze(mask)      
+        mask[mask!=label] = 0  #all values not matching the label set to zero 
+        mask[mask==label] = 1  #all values matching the label set to one 
+        return mask    
+    
+    if not labels:
+        labels = dict({'kidneys':1,'spleen':2, 'liver':3})
+    # load nii or nrrd
+    if segmented_image.endswith('.nii.gz') or segmented_image.endswith('.nii'): 
+        im = nb.load(segmented_image).get_fdata()
+        header = nb.load(segmented_image).header
+    elif segmented_image.endswith('.nrrd'): 
+        im, header = nrrd.read(segmented_image)
+    label_masks = [_create_label_mask(im, label_id) for label,label_id in labels.items()]
+    return label_masks, header
+
+def ivimFBMMRFEstimator(bvalsFiles_average,mask,out_dir,fit_model,iterations=0,debug = False): 
+    """
+    Wrapper for FBM DIPY algorithm in python for a single image. 
+    
+    C++ implementation of FBM algorithms can be found here:
+        /fileserver/abd/bin/ivimFBMMRFEstimator
+    Note that the algorithm generates .vtk files. 
+    
+    Args: 
+        bvalsFiles_average (str): path to a .txt file that indicates the full path to all of the 7 b-value images
+        mask (str): path to a binary segmentation image in .vtk format 
+        out_dir (str): path to a directory to save the files 
+        fit_model (str): DIPY (BOBYQA) or FBM (spatially regularized BOBYQA)
+        
+    
+    """
+    func = "/fileserver/abd/bin/ivimFBMMRFEstimator"
+    log = ""
+    if fit_model == 'FBM':
+        if iterations == 0: 
+            iterations = 500 # set iterations to 500 if iterations are not supplied with the model (aka if they regress to default of zero)    
+    cmd = [func,"--optMode","FBM","-n",str(7),"-i",bvalsFiles_average,"-g",str(iterations),"-o",out_dir,"-m", mask,log]
+    if debug: 
+        print(' '.join(cmd))
+    #subprocess.call(cmd)      
+    execute(cmd)
+    
+def write_bvalsFileNames_average(signaldir,extension='.vtk'):
+    """create bvalFilenames_average .txt files required for running DIPY/FBM model 
+    
+    Args: 
+        signaldir (str): path to directory which contains the acquired b-value files (whether geometrically averaged or not) in the form 'b0_averaged.vtk', etc 
+        extension (str): specify whether the filesnames are .nrrd or .vtk (default)
+    Returns: 
+        savedir (str): directory to which the bvalsFileNames.txt file was saved. 
+
+    WARNING: .txt file will be saved to the same directory where the images are 
+    NB Advanced user warning: this is different to bvalsFilename.txt which is required to run geometric averaging operation. Do not confused the two. 
+
+    
+    """
+    savedir = signaldir + "/bvalsFileNames.txt"
+    lines = []
+    
+    with open(savedir,'w') as f:
+        for bval in [0,50,100,200,400,600,800]:
+            fullpath=signaldir+"b"+str(bval)+"_averaged"+extension
+            lines.append('\t'.join([str(bval),fullpath+"\n"]))
+        f.writelines(lines) 
+    return savedir
+
+
+def ivim_eqtn_image(parameters): 
+    # get signal estimate from IVIM parameter estimates
+    S0 = parameters['S0'][...,np.newaxis] #expand with one new axis so that b* parameter can be broadcast
+    D = parameters['D'][...,np.newaxis]
+    P = parameters['P'][...,np.newaxis]
+    P_f = parameters['P_f'][...,np.newaxis]
+    x,y,z,t = S0.shape
+    bvals = np.array([0,50,100,200,400,600,800])
+    bvals_ = np.tile(bvals,(x,y,z,1))
+    
+    signal_image = S0*(P_f*np.exp(-1*bvals_*P)+(1-P_f)*np.exp(-1*bvals_*D))
+    signal_image = np.moveaxis(signal_image,3,0)
+    return signal_image
+
+
+def ivim_eqtn_voxel(parameters): 
+    # put parameter estimates of a voxel through the forward model to obtain the estimated signal 
+    S0 = parameters['S0']
+    D = parameters['D']
+    P = parameters['P']
+    P_f = parameters['P_f']
+    bvals = np.array([0,50,100,200,400,600,800])
+    signal = S0*(P_f*np.exp(-1*bvals*P)+(1-P_f)*np.exp(-1*bvals*D))
+    return signal
+    
+
+# -----------
+# Misc
+# -----------
+
+
+
+
+# #########################################################################################################################
+# -------------------------------------------------------------------------------------------------------------------------
+# #########################################################################################################################
+#
+# 
+# 
+# SECTION 2 - WIP 
+#
+#
+#
+# #########################################################################################################################
+# -------------------------------------------------------------------------------------------------------------------------
+# #########################################################################################################################
+
+
+
+# -----------
+# WIP 
+# -----------
+
+def sort_glob_slices(files,refpattern='0000'):
+    
+    #unfinished due to pressing deadline - return later 
+    """Fetch files via `glob` and sort them in ascending order numerically by slice number
+    
+    Args:
+        refpattern (str): reference pattern to match the slices to, for example '0000' would use this slice as reference and sort all files numerically in this substring
+        
+        files (str): list of files found by `glob` function 
+    
+    """      
+    
+    """ Debug (bash)
+    
+    rootdir='/home/ch215616/abd/mwf_data/mwf_maps_all_patients/volunteer/synthnet/simple_unet/'
+    files = glob.glob(rootdir+'*.nii.gz')
+    
+    references = [f for f in files if refpattern in f]
+    
+    for r in references:
+        slices = glob.glob(r.replace(refpattern,"*"))
+        
+        # now extract biggest and smallest number in the 'refpattern', then iterate over these numbers and fetch files
+    
+    
+    
+    """
+    pass
+            
 
 def fix_random_seed():
 
@@ -1107,15 +1189,3 @@ def fix_random_seed():
 	# tf.compat.v1.keras.backend.set_session(sess)
 
 	# https://stackoverflow.com/questions/32419510/how-to-get-reproducible-results-in-keras
-
-
-def launch_json(s):
-    """Convert Terminal command into a launch .json string"""
-
-    # check that there aren't any $ signs in the strings as we need the full path
-    assert '$' not in s, f"Please eliminate all $ signs by passing the string through 'echo' command first in Terminal."
-
-    print("Paste the following into launch.json with \"args\": [OUTPUT_LIST] without 'python' and 'COMMAND_NAME' ")
-    print(' ')
-
-    print(json.dumps(s.split(' ')))
