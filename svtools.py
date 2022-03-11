@@ -21,6 +21,7 @@ import argparse
 import re
 import fnmatch
 import math 
+from inspect import currentframe, getframeinfo
 
 import nrrd
 import pickle
@@ -28,6 +29,21 @@ import git
 import nibabel as nb
 import numpy as np 
 import matplotlib.pyplot as plt 
+import yaml 
+from yaml2object import YAMLObject
+
+
+
+# -----------
+# NEW - please add and comment
+# -----------
+
+
+def natural_sort(l): 
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+    return sorted(l, key=alphanum_key)
+
 
 
 # -----------
@@ -35,17 +51,20 @@ import matplotlib.pyplot as plt
 # -----------
 
 
-def execute(cmd,sudo=False):
+def execute(cmd,sudo=False, remote=False):
     """Execute commands in bash and print output to stdout directly"""
 
     if sudo:
         cmd = ["sudo"]+cmd
-    with subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1, universal_newlines=True) as p:
-        for line in p.stdout:
-            print(line, end='') # process line here
+    if remote:
+        print(" ".join(cmd))
+    else:
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1, universal_newlines=True) as p:
+            for line in p.stdout:
+                print(line, end='') # process line here
 
-    if p.returncode != 0:
-        raise subprocess.CalledProcessError(p.returncode, p.args)
+        if p.returncode != 0:
+            raise subprocess.CalledProcessError(p.returncode, p.args)
 
 # -----------
 # File conversion 
@@ -190,6 +209,28 @@ def pickle_dump(filename, pickle_object):
 def pickle_load(filename):
     # wrapper around the pickle load method (to avoid the clutter) 
     return pickle.load(open(filename,'rb'))
+
+
+def read_yaml_as_object(path):
+    
+    assert os.path.exists(path)
+    assert path.endswith('.yaml')
+    obj = YAMLObject('DefaultConfig', (object,), {'source': path, 'namespace': 'defaults'})
+
+    return obj
+
+def read_yaml_as_dict(path):
+
+    assert os.path.exists(path)
+    assert path.endswith('.yaml')
+    #opt = YAMLObject('DefaultConfig', (object,), {'source': path, 'namespace': 'defaults'})
+    with open(path, 'r') as stream:
+        try:
+            dictionary = yaml.safe_load(stream)
+        except yaml.YAMLError as exc:
+            print(exc)
+
+    return dictionary
 
 # -----------
 # Strings 
@@ -662,7 +703,7 @@ def save_args(savedir, args=None,args_savetype=None):
     if saved:
         print(f"Saved args")    
   
-def save_git_status(savedir):
+def save_git_status(savedir, prefix=""):
     """
     Save sha hash of current git head for the repository and git status
 
@@ -687,12 +728,19 @@ def save_git_status(savedir):
     dictionary['status'] = repo.git.status()
     
     # save 
-    write_to_json(dictionary,savedir+"git_status.json") # save args into .json  
+    write_to_json(dictionary,savedir+prefix+"git_status.json") # save args into .json  
     
     if saved:
         print(f"Saved git head sha and status")    
 
-
+def is_git_repo(path):
+    try:
+        _ = git.Repo(path, search_parent_directories=True).git_dir
+        return True
+    except git.exc.InvalidGitRepositoryError:
+        return False
+        
+        
 # -----------
 # Image viewers (bash)
 # -----------
@@ -1101,6 +1149,51 @@ def ivim_eqtn_voxel(parameters):
 # Misc
 # -----------
 
+
+def msg(msg='', buffer=3,abspath=True):
+    
+    """ 
+    This function is supposed to be used as a custom assert helper function. Allows for interactive python usage. 
+    
+    Example: 
+        from IPython import embed; embed 
+        
+        assert 5==6, embed(header=sv.msg('Something went wrong'))
+        
+    This funciton prints line number and filename where a given piece of code was executed, together with a customer message.
+    
+    """
+    
+    def _get_line(line, buffer=3):
+        """Get specific lines of code from a filename at a given line number. 
+        
+        Specify 'buffer' to get more lines on either side of the given line. 
+        """
+        assert os.path.exists(filename), f"{filename}"
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+        
+        
+        lines_subset = lines[(line-1)-buffer:(line-1)+buffer]
+        
+        lines_subset = ' '.join(lines_subset)
+        
+        return lines_subset
+    
+    filename = getframeinfo(currentframe().f_back).filename # get filename 
+    line = currentframe().f_back.f_lineno # gets line number 
+    code = _get_line(line, buffer=buffer) # gets the code lines 
+    
+    if not abspath: 
+        filename = os.path.basename(filename) # print only the filename, not the full path 
+    
+    output = f"Error on line: {line} of {filename}. \n\n{code}\n\n"
+    
+    if msg:
+        # add extra message
+        output = output + f"{msg}"
+
+    return output
 
 
 

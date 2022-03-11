@@ -1,2 +1,8 @@
 .ipynb_checkpoints
 __pycache__
+
+# custom to this repo
+itkview.py
+jup_convert.py
+misc/
+todo.txt
