@@ -5,9 +5,6 @@ Helper tools for loading, converting and plotting MR images
 Author: 
     serge.vasylechko@tch.harvard.edu 
 
-Date: 
-    2020-07-23
-
 """
 
 import subprocess 
