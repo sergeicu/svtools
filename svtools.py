@@ -1116,14 +1116,19 @@ def write_bvalsFileNames_average(signaldir,extension='.vtk'):
     return savedir
 
 
-def ivim_eqtn_image(parameters): 
+def ivim_eqtn_image(parameters,bvalues=None): 
     # get signal estimate from IVIM parameter estimates
     S0 = parameters['S0'][...,np.newaxis] #expand with one new axis so that b* parameter can be broadcast
     D = parameters['D'][...,np.newaxis]
     P = parameters['P'][...,np.newaxis]
     P_f = parameters['P_f'][...,np.newaxis]
     x,y,z,t = S0.shape
-    bvals = np.array([0,50,100,200,400,600,800])
+    if bvalues is None: 
+        bvals = np.array([0,50,100,200,400,600,800])
+    else: 
+        assert isinstance(bvalues,list)
+        assert all([isinstance(i,int) for i in bvalues])
+        bvals = np.array(bvalues)
     bvals_ = np.tile(bvals,(x,y,z,1))
     
     signal_image = S0*(P_f*np.exp(-1*bvals_*P)+(1-P_f)*np.exp(-1*bvals_*D))
